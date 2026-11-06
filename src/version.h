@@ -1,0 +1,4 @@
+#pragma once
+
+#define FRAMETAMER_VERSION "1.0"
+#define FRAMETAMER_VERSION_NUMBERS 1, 0, 0, 0
