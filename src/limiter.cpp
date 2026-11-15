@@ -9,20 +9,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "limiter.h"
 #include "version.h"
-
-extern "C" {
-typedef struct lua_State lua_State;
-typedef int (*lua_CFunction)(lua_State *);
-__declspec(dllimport) void lua_createtable(lua_State *L, int narr, int nrec);
-__declspec(dllimport) void lua_pushcclosure(lua_State *L, lua_CFunction fn, int n);
-__declspec(dllimport) void lua_setfield(lua_State *L, int idx, const char *k);
-__declspec(dllimport) const char *lua_tolstring(lua_State *L, int idx, size_t *len);
-__declspec(dllimport) void lua_pushboolean(lua_State *L, int b);
-__declspec(dllimport) void lua_pushstring(lua_State *L, const char *s);
-__declspec(dllimport) int lua_toboolean(lua_State *L, int idx);
-__declspec(dllimport) double lua_tonumber(lua_State *L, int idx);
-}
 
 // The game's frame, roughly:
 //
@@ -31,7 +19,7 @@ __declspec(dllimport) double lua_tonumber(lua_State *L, int idx);
 //     update + 3D scene   <- scene draw flag, model draw, occlusion test
 //     game task, UI       <- draw wrappers
 //     EndScene
-//     Present             <- skipped on dropped frames
+//     Present             <- skipped on dropped frames (Ashita: the real device's Present)
 //     divisor pacing
 //
 // The update always runs. A dropped frame only loses its drawing.
@@ -210,9 +198,46 @@ static void __fastcall presentDetour(void *self, void *unused)
         statsWorkMs = 0.0;
     }
 
+#ifndef FRAMETAMER_ASHITA
     if (skipFrame) return;
+#endif
     presentOriginal(self, unused);
 }
+
+#ifdef FRAMETAMER_ASHITA
+static HRESULT(__stdcall *devicePresentOriginal)(void *self, const RECT *source, const RECT *dest, HWND window, const RGNDATA *dirty) = nullptr;
+
+/// Skips the real device's Present on dropped frames.
+static HRESULT __stdcall devicePresentDetour(void *self, const RECT *source, const RECT *dest, HWND window, const RGNDATA *dirty)
+{
+    if (skipFrame) return S_OK;
+    return devicePresentOriginal(self, source, dest, window, dirty);
+}
+
+/// Hooks the device's Present.
+/// @param device the real Direct3D 8 device
+/// @return true when hooked
+static bool hookDevicePresent(void *device)
+{
+    if (devicePresentOriginal) return true;
+    if (!device) {
+        writeLog("refused: no Direct3D device");
+        return false;
+    }
+    void **slot = *(void ***)device + 15;
+    DWORD oldProtect;
+    if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &oldProtect)) {
+        writeLog("refused: device Present could not be unlocked for writing");
+        return false;
+    }
+    devicePresentOriginal = (decltype(devicePresentOriginal))*slot;
+    *slot = (void *)devicePresentDetour;
+    DWORD unused;
+    VirtualProtect(slot, sizeof(void *), oldProtect, &unused);
+    writeDebugLog("hooked device Present");
+    return true;
+}
+#endif
 
 // Hook Installation
 struct Hook {
@@ -341,8 +366,9 @@ static void suspendOutsideHooks(const std::vector<HANDLE> &threads)
 }
 
 /// Finds every target by its pattern, then builds trampolines and patches the jumps.
+/// @param device the real Direct3D 8 device (Ashita only)
 /// @return true when all hooks were installed, false when any pattern didn't match exactly once
-static bool installHooks()
+static bool installHooks(void *device)
 {
     uint8_t *base = (uint8_t *)GetModuleHandleA("FFXiMain.dll");
     if (!base) {
@@ -372,6 +398,9 @@ static bool installHooks()
         }
     }
     if (!matched) return false;
+#ifdef FRAMETAMER_ASHITA
+    if (!hookDevicePresent(device)) return false;
+#endif
 
     uint8_t *trampolines = (uint8_t *)VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!trampolines) {
@@ -433,142 +462,97 @@ static bool installHooks()
     return true;
 }
 
-// Lua Interface
-static int luaSetLogPath(lua_State *L)
+// Limiter Interface
+namespace limiter
 {
-    const char *path = lua_tolstring(L, 1, nullptr);
-    if (!path) return 0;
-    AcquireSRWLockExclusive(&logLock);
-    if (logPath != path) {
-        if (logFile) fclose(logFile);
-        logFile = nullptr;
-        logPath = path;
+    void setLogPath(const char *path)
+    {
+        AcquireSRWLockExclusive(&logLock);
+        if (logPath != path) {
+            if (logFile) fclose(logFile);
+            logFile = nullptr;
+            logPath = path;
+        }
+        ReleaseSRWLockExclusive(&logLock);
     }
-    ReleaseSRWLockExclusive(&logLock);
-    return 0;
-}
 
-static int luaInstall(lua_State *L)
-{
-    if (!installed) {
-        QueryPerformanceFrequency(&counterFrequency);
-        QueryPerformanceCounter(&statsStartedAt);
-        lastDrawnAt = statsStartedAt;
-        frameStartedAt = statsStartedAt;
-        previousFrameStartedAt = statsStartedAt;
-        statsCpuStart = processCpuTime();
-        installed = installHooks();
-        if (installed) {
-            writeDebugLog("hooks installed");
+    bool install(void *device)
+    {
+        if (!installed) {
+            QueryPerformanceFrequency(&counterFrequency);
+            QueryPerformanceCounter(&statsStartedAt);
+            lastDrawnAt = statsStartedAt;
+            frameStartedAt = statsStartedAt;
+            previousFrameStartedAt = statsStartedAt;
+            statsCpuStart = processCpuTime();
+            installed = installHooks(device);
+            if (installed) {
+                writeDebugLog("hooks installed");
+            }
+            else {
+                writeLog("hooks not installed");
+            }
+        }
+        return installed;
+    }
+
+    bool isInstalled()
+    {
+        return installed;
+    }
+
+    void setEnabled(bool value)
+    {
+        enabled = installed && value;
+        writeDebugLog(enabled ? "limiter on" : "limiter off");
+    }
+
+    void setDrawFps(double fps)
+    {
+        if (fps <= 0.0) return;
+        drawIntervalMs = 1000.0 / fps;
+        char line[80];
+        sprintf_s(line, "draw fps %.2f", fps);
+        writeDebugLog(line);
+    }
+
+    /// Sets one of the game fps caps and logs it.
+    /// @param fps the cap, 0 or less for uncapped
+    /// @param interval the cap to set
+    /// @param name the cap's name for the log
+    static void setCap(double fps, volatile double &interval, const char *name)
+    {
+        interval = fps > 0.0 ? 1000.0 / fps : 0.0;
+        char line[80];
+        if (fps > 0.0) {
+            sprintf_s(line, "%s fps cap %.2f", name, fps);
         }
         else {
-            writeLog("hooks not installed");
+            sprintf_s(line, "%s fps cap off", name);
         }
+        writeDebugLog(line);
     }
-    lua_pushboolean(L, installed);
-    return 1;
-}
 
-static int luaSetEnabled(lua_State *L)
-{
-    enabled = installed && lua_toboolean(L, 1) != 0;
-    writeDebugLog(enabled ? "limiter on" : "limiter off");
-    return 0;
-}
-
-static int luaSetDrawFps(lua_State *L)
-{
-    double fps = lua_tonumber(L, 1);
-    if (fps <= 0.0) return 0;
-    drawIntervalMs = 1000.0 / fps;
-    char line[80];
-    sprintf_s(line, "draw fps %.2f", fps);
-    writeDebugLog(line);
-    return 0;
-}
-
-/// Sets one of the game fps caps from Lua and logs it.
-/// @param L the Lua state, holding the fps (0 or less for uncapped)
-/// @param interval the cap to set
-/// @param name the cap's name for the log
-static void setCap(lua_State *L, volatile double &interval, const char *name)
-{
-    double fps = lua_tonumber(L, 1);
-    interval = fps > 0.0 ? 1000.0 / fps : 0.0;
-    char line[80];
-    if (fps > 0.0) {
-        sprintf_s(line, "%s fps cap %.2f", name, fps);
+    void setGameFps(double fps)
+    {
+        setCap(fps, gameIntervalMs, "game");
     }
-    else {
-        sprintf_s(line, "%s fps cap off", name);
+
+    void setCutsceneFps(double fps)
+    {
+        setCap(fps, cutsceneIntervalMs, "cutscene");
     }
-    writeDebugLog(line);
-}
 
-static int luaSetGameFps(lua_State *L)
-{
-    setCap(L, gameIntervalMs, "game");
-    return 0;
-}
+    void setInEvent(bool value)
+    {
+        inEvent = value;
+        writeDebugLog(inEvent ? "event started" : "event ended");
+    }
 
-static int luaSetCutsceneFps(lua_State *L)
-{
-    setCap(L, cutsceneIntervalMs, "cutscene");
-    return 0;
-}
-
-static int luaSetInEvent(lua_State *L)
-{
-    inEvent = lua_toboolean(L, 1) != 0;
-    writeDebugLog(inEvent ? "event started" : "event ended");
-    return 0;
-}
-
-static int luaSetDebug(lua_State *L)
-{
-    bool wasLogging = debugLogging;
-    debugLogging = lua_toboolean(L, 1) != 0;
-    if (debugLogging && !wasLogging) writeLog("debug logging on, DLL " FRAMETAMER_VERSION);
-    return 0;
-}
-
-static int luaIsInstalled(lua_State *L)
-{
-    lua_pushboolean(L, installed);
-    return 1;
-}
-
-static int luaVersion(lua_State *L)
-{
-    lua_pushstring(L, FRAMETAMER_VERSION);
-    return 1;
-}
-
-extern "C" __declspec(dllexport) int luaopen__frametamer(lua_State *L)
-{
-    // Pinned: the hooks jump into this DLL, so it can never unload while the game runs.
-    HMODULE self;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, (LPCWSTR)&luaopen__frametamer, &self);
-    lua_createtable(L, 0, 10);
-    lua_pushcclosure(L, luaSetLogPath, 0);
-    lua_setfield(L, -2, "setLogPath");
-    lua_pushcclosure(L, luaInstall, 0);
-    lua_setfield(L, -2, "install");
-    lua_pushcclosure(L, luaSetEnabled, 0);
-    lua_setfield(L, -2, "setEnabled");
-    lua_pushcclosure(L, luaSetDrawFps, 0);
-    lua_setfield(L, -2, "setDrawFps");
-    lua_pushcclosure(L, luaSetGameFps, 0);
-    lua_setfield(L, -2, "setGameFps");
-    lua_pushcclosure(L, luaSetCutsceneFps, 0);
-    lua_setfield(L, -2, "setCutsceneFps");
-    lua_pushcclosure(L, luaSetInEvent, 0);
-    lua_setfield(L, -2, "setInEvent");
-    lua_pushcclosure(L, luaSetDebug, 0);
-    lua_setfield(L, -2, "setDebug");
-    lua_pushcclosure(L, luaIsInstalled, 0);
-    lua_setfield(L, -2, "isInstalled");
-    lua_pushcclosure(L, luaVersion, 0);
-    lua_setfield(L, -2, "version");
-    return 1;
-}
+    void setDebug(bool value)
+    {
+        bool wasLogging = debugLogging;
+        debugLogging = value;
+        if (debugLogging && !wasLogging) writeLog("debug logging on, DLL " FRAMETAMER_VERSION);
+    }
+} // namespace limiter

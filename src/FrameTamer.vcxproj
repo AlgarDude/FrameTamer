@@ -39,7 +39,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="frametamer.cpp" />
+    <ClCompile Include="limiter.cpp" />
+    <ClCompile Include="windower.cpp" />
+    <ClInclude Include="limiter.h" />
     <ClInclude Include="version.h" />
     <ResourceCompile Include="frametamer.rc" />
     <None Include="LuaCore.def" />

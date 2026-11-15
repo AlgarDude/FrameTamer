@@ -1,6 +1,6 @@
 # FrameTamer
 
-A frame limiting addon for **Final Fantasy XI** on **Windower 4**.
+A frame limiting addon for **Final Fantasy XI** on **Windower 4** and **Ashita v4**.
 
 Unlike traditional frame limiters, FrameTamer works by stopping draws from happening, while the game engine itself still runs at a proper speed.
 
@@ -59,7 +59,7 @@ The game then runs exactly as it would without FrameTamer.
 
 ## Install instructions
 
-1. Download the zip from the [latest release](../../releases/latest).
+1. Download the newest `windower` zip from [releases](../../releases).
 2. Extract it into `Windower/addons`, so it lands as `addons/FrameTamer/`.
 3. Load it with `//lua load frametamer`, or add it to your autoload.
 4. Log in. It turns on at login, on the defaults above.
@@ -77,9 +77,23 @@ Once loaded, the DLL stays in the game until the client closes. Close every clie
 FrameTamer: Restart Needed - Updated to <new>, the game is still running <old>.
 ```
 
+## Ashita
+
+The Ashita addon works the same way, with these differences:
+
+- Commands start with one slash: `/ft`, `/ft draw 2`, `/ft all off`.
+- Settings and the debug log go to `config/addons/frametamer/<name>.lua` and `<name>.log`.
+
+To install:
+
+1. Download the newest `ashita` zip from [releases](../../releases).
+2. Extract it into `Ashita/addons`, so it lands as `addons/frametamer/`.
+3. Load it with `/addon load frametamer`, or add that line to your boot script.
+4. Log in, then check with `/ft`.
+
 ## Building
 
-Open `src/FrameTamer.sln` in Visual Studio with the C++ desktop workload and build **Release x86**. It writes `libs/_frametamer.dll`, linking against Windower's `LuaCore.dll` through `src/LuaCore.def`.
+Open `src/FrameTamer.sln` in Visual Studio with the C++ desktop workload and build **Release x86**. It writes `libs/_frametamer.dll`, linking against Windower's `LuaCore.dll` through `src/LuaCore.def`, and `ashita/addons/frametamer/libs/_frametamer.dll`.
 
 ## License
 

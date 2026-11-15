@@ -11,7 +11,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
+#ifdef FRAMETAMER_ASHITA
+            VALUE "FileDescription", "FrameTamer for Ashita"
+#else
             VALUE "FileDescription", "FrameTamer for Windower"
+#endif
             VALUE "FileVersion", FRAMETAMER_VERSION
             VALUE "ProductName", "FrameTamer"
             VALUE "ProductVersion", FRAMETAMER_VERSION

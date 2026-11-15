@@ -1,9 +1,9 @@
-# Pushing a tag v<version> builds the DLL and publishes a release zip holding a FrameTamer folder.
+# Pushing a tag windower-v<version> or ashita-v<version> builds that platform's DLL and publishes its zip.
 name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['windower-v*', 'ashita-v*']
 
 permissions:
   contents: write
@@ -16,16 +16,31 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
-      - name: Build
-        run: msbuild src/FrameTamer.sln -p:Configuration=Release -p:Platform=x86
+      - name: Build Windower
+        if: startsWith(github.ref_name, 'windower-v')
+        run: msbuild src/FrameTamer.vcxproj -p:Configuration=Release -p:Platform=Win32
 
-      - name: Package
+      - name: Build Ashita
+        if: startsWith(github.ref_name, 'ashita-v')
+        run: msbuild src/FrameTamerAshita.vcxproj -p:Configuration=Release -p:Platform=Win32
+
+      - name: Package Windower
+        if: startsWith(github.ref_name, 'windower-v')
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force package/FrameTamer/libs | Out-Null
           Copy-Item FrameTamer.lua, README.md, LICENSE package/FrameTamer/
           Copy-Item libs/_frametamer.dll package/FrameTamer/libs/
           Compress-Archive package/FrameTamer FrameTamer-${{ github.ref_name }}.zip
+
+      - name: Package Ashita
+        if: startsWith(github.ref_name, 'ashita-v')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package/frametamer/libs | Out-Null
+          Copy-Item ashita/addons/frametamer/frametamer.lua, README.md, LICENSE package/frametamer/
+          Copy-Item ashita/addons/frametamer/libs/_frametamer.dll package/frametamer/libs/
+          Compress-Archive package/frametamer FrameTamer-${{ github.ref_name }}.zip
 
       - name: Publish
         env:
