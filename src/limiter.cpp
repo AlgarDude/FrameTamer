@@ -21,8 +21,6 @@
 //     EndScene
 //     Present             <- skipped on dropped frames (Ashita: the real device's Present)
 //     divisor pacing
-//
-// The update always runs. A dropped frame only loses its drawing.
 
 // Game Hooks
 // The game's functions are thiscall. Declaring them __fastcall with an unused edx puts `this` in ecx.
@@ -40,7 +38,13 @@ static volatile bool enabled = false;
 static volatile double drawIntervalMs = 1000.0;
 static volatile double gameIntervalMs = 0.0;
 static volatile double cutsceneIntervalMs = 0.0;
+static volatile double foregroundGameIntervalMs = 0.0;
+static volatile double foregroundCutsceneIntervalMs = 0.0;
+static volatile double zoneIntervalMs = 0.0;
 static volatile bool inEvent = false;
+static volatile bool zoning = false;
+static LARGE_INTEGER zoningStartedAt;
+static volatile int zoningFrames = 0;
 static LARGE_INTEGER previousFrameStartedAt;
 static bool installed = false;
 static bool skipFrame = false;
@@ -112,8 +116,17 @@ static bool __fastcall frameStartDetour(void *self, void *unused)
         writeDebugLog(foreground ? "focus gained" : "focus lost");
         wasForeground = foreground;
     }
-    double capIntervalMs = inEvent ? cutsceneIntervalMs : gameIntervalMs;
-    if (enabled && !foreground && capIntervalMs > 0.0) {
+    double capIntervalMs = 0.0;
+    if (zoning) {
+        capIntervalMs = zoneIntervalMs;
+    }
+    else if (foreground) {
+        capIntervalMs = inEvent ? foregroundCutsceneIntervalMs : foregroundGameIntervalMs;
+    }
+    else {
+        capIntervalMs = inEvent ? cutsceneIntervalMs : gameIntervalMs;
+    }
+    if (enabled && capIntervalMs > 0.0) {
         double remaining = capIntervalMs - elapsedMs(previousFrameStartedAt, frameStartedAt);
         while (remaining >= 1.0) {
             Sleep((DWORD)remaining);
@@ -122,6 +135,7 @@ static bool __fastcall frameStartDetour(void *self, void *unused)
         }
     }
     previousFrameStartedAt = frameStartedAt;
+    if (zoning) zoningFrames++;
     skipFrame = enabled && !foreground && elapsedMs(lastDrawnAt, frameStartedAt) < drawIntervalMs;
     if (!skipFrame) lastDrawnAt = frameStartedAt;
     return frameStartOriginal(self, unused);
@@ -429,7 +443,7 @@ static bool installHooks(void *device)
         cursor += 5;
     }
 
-    // Patch with the rest of the process suspended, the way Detours does, so no thread runs a half-written jump.
+    // Patch with the rest of the process suspended so no thread runs a half-written jump.
     // Every target is unlocked before any is written, so a refusal leaves the game untouched.
     std::vector<HANDLE> threads = openOtherThreads();
     suspendOutsideHooks(threads);
@@ -543,10 +557,43 @@ namespace limiter
         setCap(fps, cutsceneIntervalMs, "cutscene");
     }
 
+    void setForegroundGameFps(double fps)
+    {
+        setCap(fps, foregroundGameIntervalMs, "foreground game");
+    }
+
+    void setForegroundCutsceneFps(double fps)
+    {
+        setCap(fps, foregroundCutsceneIntervalMs, "foreground cutscene");
+    }
+
+    void setZoneFps(double fps)
+    {
+        setCap(fps, zoneIntervalMs, "zone");
+    }
+
     void setInEvent(bool value)
     {
         inEvent = value;
         writeDebugLog(inEvent ? "event started" : "event ended");
+    }
+
+    void setZoning(bool value)
+    {
+        if (value && !zoning) {
+            QueryPerformanceCounter(&zoningStartedAt);
+            zoningFrames = 0;
+            writeDebugLog("zoning started");
+        }
+        else if (!value && zoning) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double seconds = elapsedMs(zoningStartedAt, now) / 1000.0;
+            char line[100];
+            sprintf_s(line, "zoning ended: %.1f s, %d frames, %.1f frames/s", seconds, zoningFrames, zoningFrames / seconds);
+            writeDebugLog(line);
+        }
+        zoning = value;
     }
 
     void setDebug(bool value)

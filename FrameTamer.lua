@@ -1,17 +1,18 @@
 -- FrameTamer: background clients draw at a low rate while the game itself keeps running.
 _addon.name = 'FrameTamer'
 _addon.author = 'AlgarDude'
-_addon.version = '1.0'
+_addon.version = '1.02'
 _addon.commands = {'frametamer', 'ft'}
 
 package.cpath = package.cpath .. ';' .. windower.addon_path .. 'libs/?.dll'
 local limiter = require('_frametamer')
 
-local defaults = {enabled = true, drawFps = 1, gameFps = 15, cutsceneFps = 0, debug = false}
+local defaults = {enabled = true, drawFps = 1, gameFps = 15, cutsceneFps = 0, foregroundGameFps = 180, foregroundCutsceneFps = 180, zoneFps = 60, debug = false}
 local settings = nil
 local playerName = nil
 local inEvent = false
 local zoningInEvent = false
+local restartNeeded = limiter.version() ~= _addon.version
 
 --- Prints one FrameTamer line to the chat log.
 --- @param text string the message
@@ -54,11 +55,23 @@ local function loadSettings(name)
         end
     end
 
-    local loaded = {enabled = defaults.enabled, drawFps = defaults.drawFps, gameFps = defaults.gameFps, cutsceneFps = defaults.cutsceneFps, debug = defaults.debug}
+    local loaded = {
+        enabled = defaults.enabled,
+        drawFps = defaults.drawFps,
+        gameFps = defaults.gameFps,
+        cutsceneFps = defaults.cutsceneFps,
+        foregroundGameFps = defaults.foregroundGameFps,
+        foregroundCutsceneFps = defaults.foregroundCutsceneFps,
+        zoneFps = defaults.zoneFps,
+        debug = defaults.debug,
+    }
     if type(saved.enabled) == 'boolean' then loaded.enabled = saved.enabled end
     if isFps(saved.drawFps, 0.01) then loaded.drawFps = saved.drawFps end
     if isFps(saved.gameFps, 10) then loaded.gameFps = saved.gameFps end
     if saved.cutsceneFps == 0 or isFps(saved.cutsceneFps, 10) then loaded.cutsceneFps = saved.cutsceneFps end
+    if isFps(saved.foregroundGameFps, 10) then loaded.foregroundGameFps = saved.foregroundGameFps end
+    if saved.foregroundCutsceneFps == 0 or isFps(saved.foregroundCutsceneFps, 10) then loaded.foregroundCutsceneFps = saved.foregroundCutsceneFps end
+    if isFps(saved.zoneFps, 10) then loaded.zoneFps = saved.zoneFps end
     if type(saved.debug) == 'boolean' then loaded.debug = saved.debug end
     return loaded
 end
@@ -70,10 +83,9 @@ local function saveSettings()
         say("Settings Not Saved - data/" .. playerName .. ".lua couldn't be written. Changes last until logout.")
         return
     end
-    file:write(('return {enabled = %s, drawFps = %s, gameFps = %s, cutsceneFps = %s, debug = %s}\n'):format(tostring(settings.enabled), tostring(settings.drawFps),
-                                                                                                         tostring(settings.gameFps),
-                                                                                                         tostring(settings.cutsceneFps),
-                                                                                                         tostring(settings.debug)))
+    file:write(('return {enabled = %s, drawFps = %s, gameFps = %s, cutsceneFps = %s, foregroundGameFps = %s, foregroundCutsceneFps = %s, zoneFps = %s, debug = %s}\n')
+                   :format(tostring(settings.enabled), tostring(settings.drawFps), tostring(settings.gameFps), tostring(settings.cutsceneFps),
+                           tostring(settings.foregroundGameFps), tostring(settings.foregroundCutsceneFps), tostring(settings.zoneFps), tostring(settings.debug)))
     file:close()
 end
 
@@ -83,6 +95,9 @@ local function applySettings()
     limiter.setDrawFps(settings.drawFps)
     limiter.setGameFps(settings.gameFps)
     limiter.setCutsceneFps(settings.cutsceneFps)
+    limiter.setForegroundGameFps(settings.foregroundGameFps)
+    limiter.setForegroundCutsceneFps(settings.foregroundCutsceneFps)
+    limiter.setZoneFps(settings.zoneFps)
     limiter.setEnabled(settings.enabled)
 end
 
@@ -106,8 +121,10 @@ local function showStatus()
         sayStandingDown()
     else
         local cutsceneText = settings.cutsceneFps > 0 and (settings.cutsceneFps .. " fps") or "Unlimited"
-        say(("Current Limits - Draw: %s fps | Game: %s fps | Cutscene: %s"):format(settings.drawFps, settings.gameFps, cutsceneText) ..
+        say(("Background - Draw: %s fps | Game: %s fps | Cutscene: %s | Zone: %s fps"):format(settings.drawFps, settings.gameFps, cutsceneText, settings.zoneFps) ..
                 (settings.debug and " | Debug: On" or ""))
+        local foregroundCutsceneText = settings.foregroundCutsceneFps > 0 and (settings.foregroundCutsceneFps .. " fps") or "Unlimited"
+        say(("Foreground - Game: %s fps | Cutscene: %s"):format(settings.foregroundGameFps, foregroundCutsceneText))
     end
 end
 
@@ -117,8 +134,9 @@ local function showHelp()
     windower.add_to_chat(207, "  //ft - Show current limits")
     windower.add_to_chat(207, "  //ft on | off - Turn limiting on or off (also enable | disable)")
     windower.add_to_chat(207, "  //ft draw <fps> - Background redraw rate (Default: 1)")
-    windower.add_to_chat(207, "  //ft game <fps> - Background game speed, capped by frame rate divisor (Default: 15)")
-    windower.add_to_chat(207, "  //ft cutscene <fps> | off - Background game speed in cutscenes and menus (Default: Off)")
+    windower.add_to_chat(207, "  //ft game <fps> [bg | fg] - Game speed, capped by frame rate divisor (Default: 15 bg, 180 fg)")
+    windower.add_to_chat(207, "  //ft cutscene <fps> | off [bg | fg] - Game speed in cutscenes and menus (Default: Off bg, 180 fg)")
+    windower.add_to_chat(207, "  //ft zone <fps> - Game speed while changing zones (Default: 60)")
     windower.add_to_chat(207, "  //ft debug on | off - Log a summary each minute to data/<name>.log (Default: Off)")
     windower.add_to_chat(207, "  //ft reset - Return this character to defaults")
     windower.add_to_chat(207, "  //ft all <command> - Send a command to every logged-in character")
@@ -141,26 +159,55 @@ end
 --- Runs one FrameTamer command for this character.
 --- @param command string|nil the command word
 --- @param value string|nil its value
-local function runCommand(command, value)
+--- @param side string|nil bg, background, fg, foreground, or nil for background
+local function runCommand(command, value, side)
     command = (command or ''):lower()
     value = (value or ''):lower()
+    side = (side or ''):lower()
     local number = tonumber(value)
+    local foreground = side == 'fg' or side == 'foreground'
+    if not foreground and side ~= '' and side ~= 'bg' and side ~= 'background' then
+        say("Invalid Value - Side must be BG or FG.")
+        return
+    end
     if command == 'on' or command == 'off' or command == 'enable' or command == 'disable' then
         settings.enabled = command == 'on' or command == 'enable'
         limiter.setEnabled(settings.enabled)
     elseif command == 'draw' then
+        if foreground then
+            say("Invalid Value - Draw only applies to the background.")
+            return
+        end
         if not checkFps("Draw", number, 0.01, false) then return end
         settings.drawFps = number
         limiter.setDrawFps(number)
     elseif command == 'game' then
         -- The floor of 10 here and on cutscene: below it the game risks slowdowns and missed packets.
         if not checkFps("Game", number, 10, false) then return end
-        settings.gameFps = number
-        limiter.setGameFps(number)
+        if foreground then
+            settings.foregroundGameFps = number
+            limiter.setForegroundGameFps(number)
+        else
+            settings.gameFps = number
+            limiter.setGameFps(number)
+        end
     elseif command == 'cutscene' then
         if value ~= 'off' and not checkFps("Cutscene", number, 10, true) then return end
-        settings.cutsceneFps = value == 'off' and 0 or number
-        limiter.setCutsceneFps(settings.cutsceneFps)
+        if foreground then
+            settings.foregroundCutsceneFps = value == 'off' and 0 or number
+            limiter.setForegroundCutsceneFps(settings.foregroundCutsceneFps)
+        else
+            settings.cutsceneFps = value == 'off' and 0 or number
+            limiter.setCutsceneFps(settings.cutsceneFps)
+        end
+    elseif command == 'zone' then
+        if side ~= '' then
+            say("Invalid Value - Zone applies to both background and foreground.")
+            return
+        end
+        if not checkFps("Zone", number, 10, false) then return end
+        settings.zoneFps = number
+        limiter.setZoneFps(number)
     elseif command == 'debug' then
         if value ~= 'on' and value ~= 'off' then
             say("Invalid Value - Debug must be On or Off.")
@@ -199,26 +246,33 @@ local function startLimiter(name)
     if not limiter.install() then
         sayStandingDown()
     end
-    if limiter.version() ~= _addon.version then
+    if restartNeeded then
         say("Restart Needed - Updated to " .. _addon.version .. ", the game is still running " .. limiter.version() .. ".")
+        return
     end
     applySettings()
+    limiter.setZoning(false)
     setInEvent((windower.ffxi.get_player() or {}).status == 4)
 end
 
 windower.register_event('login', startLimiter)
 
--- Status 4 is an event: a cutscene or an NPC menu, the same trigger FastCS uses.
+-- Status 4 is an event: a cutscene or an NPC menu.
 windower.register_event('status change', function(new, old)
     if new == 4 or old == 4 then
         setInEvent(new == 4)
     end
 end)
 
--- Same as FastCS: a cutscene that carries on through a zone stays uncapped on the other side.
+-- A zone change runs at the zone cap until the new zone is loaded (0x00C). A cutscene that carries
+-- on through the zone goes back to the cutscene cap after that.
 windower.register_event('outgoing chunk', function(id)
-    if id == 0x00D and inEvent then
-        zoningInEvent = true
+    if restartNeeded then return end
+    if id == 0x00D then
+        limiter.setZoning(true)
+        if inEvent then zoningInEvent = true end
+    elseif id == 0x00C then
+        limiter.setZoning(false)
     end
 end)
 
@@ -238,15 +292,18 @@ windower.register_event('addon command', function(...)
     if (args[1] or ''):lower() == 'all' then
         -- Other clients get it over Windower IPC, which only reaches this same addon.
         windower.send_ipc_message(table.concat(args, ' ', 2))
-        runCommand(args[2], args[3])
-    else
-        runCommand(args[1], args[2])
+        table.remove(args, 1)
     end
+    if restartNeeded then
+        say("Restart Needed - Updated to " .. _addon.version .. ", the game is still running " .. limiter.version() .. ".")
+        return
+    end
+    runCommand(args[1], args[2], args[3])
 end)
 
 windower.register_event('ipc message', function(message)
-    if settings and windower.ffxi.get_info().logged_in then
-        runCommand(message:match('^(%S*)%s*(%S*)'))
+    if settings and not restartNeeded and windower.ffxi.get_info().logged_in then
+        runCommand(message:match('^(%S*)%s*(%S*)%s*(%S*)'))
     end
 end)
 

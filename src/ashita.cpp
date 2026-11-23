@@ -69,6 +69,26 @@ __declspec(dllexport) void setCutsceneFps(double fps)
     limiter::setCutsceneFps(fps);
 }
 
+__declspec(dllexport) void setForegroundGameFps(double fps)
+{
+    limiter::setForegroundGameFps(fps);
+}
+
+__declspec(dllexport) void setForegroundCutsceneFps(double fps)
+{
+    limiter::setForegroundCutsceneFps(fps);
+}
+
+__declspec(dllexport) void setZoneFps(double fps)
+{
+    limiter::setZoneFps(fps);
+}
+
+__declspec(dllexport) void setZoning(bool value)
+{
+    limiter::setZoning(value);
+}
+
 __declspec(dllexport) void setInEvent(bool value)
 {
     limiter::setInEvent(value);

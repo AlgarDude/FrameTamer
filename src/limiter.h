@@ -15,6 +15,14 @@ namespace limiter
     void setGameFps(double fps);
     /// @param fps 0 for uncapped
     void setCutsceneFps(double fps);
+    /// @param fps 0 for uncapped
+    void setForegroundGameFps(double fps);
+    /// @param fps 0 for uncapped
+    void setForegroundCutsceneFps(double fps);
+    /// @param fps 0 for uncapped
+    void setZoneFps(double fps);
     void setInEvent(bool value);
+    /// Holds the client at the zone cap from leaving a zone until the next one is loaded.
+    void setZoning(bool value);
     void setDebug(bool value);
 } // namespace limiter

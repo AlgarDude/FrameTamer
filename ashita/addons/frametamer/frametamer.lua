@@ -1,7 +1,7 @@
 -- FrameTamer: background clients draw at a low rate while the game itself keeps running.
 addon.name = 'frametamer'
 addon.author = 'AlgarDude'
-addon.version = '1.0'
+addon.version = '1.02'
 addon.desc = 'Background clients draw at a low rate while the game itself keeps running.'
 addon.link = 'https://github.com/AlgarDude/FrameTamer'
 
@@ -17,6 +17,10 @@ void setEnabled(bool value);
 void setDrawFps(double fps);
 void setGameFps(double fps);
 void setCutsceneFps(double fps);
+void setForegroundGameFps(double fps);
+void setForegroundCutsceneFps(double fps);
+void setZoneFps(double fps);
+void setZoning(bool value);
 void setInEvent(bool value);
 void setDebug(bool value);
 const char *version();
@@ -25,12 +29,13 @@ bool receiveCommand(char *buffer, int size);
 ]]
 local limiter = ffi.load(('%s/libs/_frametamer.dll'):fmt(addon.path))
 
-local defaults = { enabled = true, drawFps = 1, gameFps = 15, cutsceneFps = 0, debug = false, }
+local defaults = { enabled = true, drawFps = 1, gameFps = 15, cutsceneFps = 0, foregroundGameFps = 180, foregroundCutsceneFps = 180, zoneFps = 60, debug = false, }
 local settings = nil
 local playerName = nil
 local inEvent = false
 local zoningInEvent = false
 local lastStatus = nil
+local restartNeeded = ffi.string(limiter.version()) ~= addon.version
 local received = ffi.new('char[120]')
 
 --- Prints one FrameTamer line to the chat log.
@@ -75,11 +80,23 @@ local function loadSettings(name)
         end
     end
 
-    local loaded = { enabled = defaults.enabled, drawFps = defaults.drawFps, gameFps = defaults.gameFps, cutsceneFps = defaults.cutsceneFps, debug = defaults.debug, }
+    local loaded = {
+        enabled = defaults.enabled,
+        drawFps = defaults.drawFps,
+        gameFps = defaults.gameFps,
+        cutsceneFps = defaults.cutsceneFps,
+        foregroundGameFps = defaults.foregroundGameFps,
+        foregroundCutsceneFps = defaults.foregroundCutsceneFps,
+        zoneFps = defaults.zoneFps,
+        debug = defaults.debug,
+    }
     if type(saved.enabled) == 'boolean' then loaded.enabled = saved.enabled end
     if isFps(saved.drawFps, 0.01) then loaded.drawFps = saved.drawFps end
     if isFps(saved.gameFps, 10) then loaded.gameFps = saved.gameFps end
     if saved.cutsceneFps == 0 or isFps(saved.cutsceneFps, 10) then loaded.cutsceneFps = saved.cutsceneFps end
+    if isFps(saved.foregroundGameFps, 10) then loaded.foregroundGameFps = saved.foregroundGameFps end
+    if saved.foregroundCutsceneFps == 0 or isFps(saved.foregroundCutsceneFps, 10) then loaded.foregroundCutsceneFps = saved.foregroundCutsceneFps end
+    if isFps(saved.zoneFps, 10) then loaded.zoneFps = saved.zoneFps end
     if type(saved.debug) == 'boolean' then loaded.debug = saved.debug end
     return loaded
 end
@@ -91,10 +108,9 @@ local function saveSettings()
         say("Settings Not Saved - config/addons/frametamer/" .. playerName .. ".lua couldn't be written. Changes last until logout.")
         return
     end
-    file:write(('return {enabled = %s, drawFps = %s, gameFps = %s, cutsceneFps = %s, debug = %s}\n'):format(tostring(settings.enabled), tostring(settings.drawFps),
-        tostring(settings.gameFps),
-        tostring(settings.cutsceneFps),
-        tostring(settings.debug)))
+    file:write(('return {enabled = %s, drawFps = %s, gameFps = %s, cutsceneFps = %s, foregroundGameFps = %s, foregroundCutsceneFps = %s, zoneFps = %s, debug = %s}\n')
+        :format(tostring(settings.enabled), tostring(settings.drawFps), tostring(settings.gameFps), tostring(settings.cutsceneFps),
+            tostring(settings.foregroundGameFps), tostring(settings.foregroundCutsceneFps), tostring(settings.zoneFps), tostring(settings.debug)))
     file:close()
 end
 
@@ -104,6 +120,9 @@ local function applySettings()
     limiter.setDrawFps(settings.drawFps)
     limiter.setGameFps(settings.gameFps)
     limiter.setCutsceneFps(settings.cutsceneFps)
+    limiter.setForegroundGameFps(settings.foregroundGameFps)
+    limiter.setForegroundCutsceneFps(settings.foregroundCutsceneFps)
+    limiter.setZoneFps(settings.zoneFps)
     limiter.setEnabled(settings.enabled)
 end
 
@@ -127,8 +146,10 @@ local function showStatus()
         sayStandingDown()
     else
         local cutsceneText = settings.cutsceneFps > 0 and (settings.cutsceneFps .. " fps") or "Unlimited"
-        say(("Current Limits - Draw: %s fps | Game: %s fps | Cutscene: %s"):format(settings.drawFps, settings.gameFps, cutsceneText) ..
+        say(("Background - Draw: %s fps | Game: %s fps | Cutscene: %s | Zone: %s fps"):format(settings.drawFps, settings.gameFps, cutsceneText, settings.zoneFps) ..
             (settings.debug and " | Debug: On" or ""))
+        local foregroundCutsceneText = settings.foregroundCutsceneFps > 0 and (settings.foregroundCutsceneFps .. " fps") or "Unlimited"
+        say(("Foreground - Game: %s fps | Cutscene: %s"):format(settings.foregroundGameFps, foregroundCutsceneText))
     end
 end
 
@@ -138,8 +159,9 @@ local function showHelp()
     print(chat.message("  /ft - Show current limits"))
     print(chat.message("  /ft on | off - Turn limiting on or off (also enable | disable)"))
     print(chat.message("  /ft draw <fps> - Background redraw rate (Default: 1)"))
-    print(chat.message("  /ft game <fps> - Background game speed, capped by frame rate divisor (Default: 15)"))
-    print(chat.message("  /ft cutscene <fps> | off - Background game speed in cutscenes and menus (Default: Off)"))
+    print(chat.message("  /ft game <fps> [bg | fg] - Game speed, capped by frame rate divisor (Default: 15 bg, 180 fg)"))
+    print(chat.message("  /ft cutscene <fps> | off [bg | fg] - Game speed in cutscenes and menus (Default: Off bg, 180 fg)"))
+    print(chat.message("  /ft zone <fps> - Game speed while changing zones (Default: 60)"))
     print(chat.message("  /ft debug on | off - Log a summary each minute to config/addons/frametamer/<name>.log (Default: Off)"))
     print(chat.message("  /ft reset - Return this character to defaults"))
     print(chat.message("  /ft all <command> - Send a command to every logged-in character"))
@@ -162,26 +184,55 @@ end
 --- Runs one FrameTamer command for this character.
 --- @param command string|nil the command word
 --- @param value string|nil its value
-local function runCommand(command, value)
+--- @param side string|nil bg, background, fg, foreground, or nil for background
+local function runCommand(command, value, side)
     command = (command or ''):lower()
     value = (value or ''):lower()
+    side = (side or ''):lower()
     local number = tonumber(value)
+    local foreground = side == 'fg' or side == 'foreground'
+    if not foreground and side ~= '' and side ~= 'bg' and side ~= 'background' then
+        say("Invalid Value - Side must be BG or FG.")
+        return
+    end
     if command == 'on' or command == 'off' or command == 'enable' or command == 'disable' then
         settings.enabled = command == 'on' or command == 'enable'
         limiter.setEnabled(settings.enabled)
     elseif command == 'draw' then
+        if foreground then
+            say("Invalid Value - Draw only applies to the background.")
+            return
+        end
         if not checkFps("Draw", number, 0.01, false) then return end
         settings.drawFps = number
         limiter.setDrawFps(number)
     elseif command == 'game' then
         -- The floor of 10 here and on cutscene: below it the game risks slowdowns and missed packets.
         if not checkFps("Game", number, 10, false) then return end
-        settings.gameFps = number
-        limiter.setGameFps(number)
+        if foreground then
+            settings.foregroundGameFps = number
+            limiter.setForegroundGameFps(number)
+        else
+            settings.gameFps = number
+            limiter.setGameFps(number)
+        end
     elseif command == 'cutscene' then
         if value ~= 'off' and not checkFps("Cutscene", number, 10, true) then return end
-        settings.cutsceneFps = value == 'off' and 0 or number
-        limiter.setCutsceneFps(settings.cutsceneFps)
+        if foreground then
+            settings.foregroundCutsceneFps = value == 'off' and 0 or number
+            limiter.setForegroundCutsceneFps(settings.foregroundCutsceneFps)
+        else
+            settings.cutsceneFps = value == 'off' and 0 or number
+            limiter.setCutsceneFps(settings.cutsceneFps)
+        end
+    elseif command == 'zone' then
+        if side ~= '' then
+            say("Invalid Value - Zone applies to both background and foreground.")
+            return
+        end
+        if not checkFps("Zone", number, 10, false) then return end
+        settings.zoneFps = number
+        limiter.setZoneFps(number)
     elseif command == 'debug' then
         if value ~= 'on' and value ~= 'off' then
             say("Invalid Value - Debug must be On or Off.")
@@ -220,11 +271,12 @@ local function startLimiter(name)
     if not limiter.install(ffi.cast('void*', AshitaCore:GetDirect3DDevice())) then
         sayStandingDown()
     end
-    local dllVersion = ffi.string(limiter.version())
-    if dllVersion ~= addon.version then
-        say("Restart Needed - Updated to " .. addon.version .. ", the game is still running " .. dllVersion .. ".")
+    if restartNeeded then
+        say("Restart Needed - Updated to " .. addon.version .. ", the game is still running " .. ffi.string(limiter.version()) .. ".")
+        return
     end
     applySettings()
+    limiter.setZoning(false)
     lastStatus = nil
     setInEvent(false)
 end
@@ -244,7 +296,7 @@ local function pollGame()
 
     local index = party:GetMemberTargetIndex(0)
     if index == 0 then return end
-    -- Status 4 is an event: a cutscene or an NPC menu, the same trigger FastCS uses.
+    -- Status 4 is an event: a cutscene or an NPC menu.
     local status = AshitaCore:GetMemoryManager():GetEntity():GetStatusServer(index)
     if status == lastStatus then return end
     local previous = lastStatus
@@ -259,16 +311,21 @@ end
 ashita.events.register('d3d_present', 'present_cb', function()
     pollGame()
     while limiter.receiveCommand(received, 120) do
-        if settings and loggedIn() then
-            runCommand(ffi.string(received):match('^(%S*)%s*(%S*)'))
+        if settings and not restartNeeded and loggedIn() then
+            runCommand(ffi.string(received):match('^(%S*)%s*(%S*)%s*(%S*)'))
         end
     end
 end)
 
--- Same as FastCS: a cutscene that carries on through a zone stays uncapped on the other side.
+-- A zone change runs at the zone cap until the new zone is loaded (0x00C). A cutscene that carries
+-- on through the zone goes back to the cutscene cap after that.
 ashita.events.register('packet_out', 'packet_out_cb', function(e)
-    if e.id == 0x00D and inEvent then
-        zoningInEvent = true
+    if restartNeeded then return end
+    if e.id == 0x00D then
+        limiter.setZoning(true)
+        if inEvent then zoningInEvent = true end
+    elseif e.id == 0x00C then
+        limiter.setZoning(false)
     end
 end)
 
@@ -293,10 +350,13 @@ ashita.events.register('command', 'command_cb', function(e)
     end
     if (args[2] or ''):lower() == 'all' then
         limiter.sendCommand(table.concat(args, ' ', 3))
-        runCommand(args[3], args[4])
-    else
-        runCommand(args[2], args[3])
+        table.remove(args, 2)
     end
+    if restartNeeded then
+        say("Restart Needed - Updated to " .. addon.version .. ", the game is still running " .. ffi.string(limiter.version()) .. ".")
+        return
+    end
+    runCommand(args[2], args[3], args[4])
 end)
 
 ashita.events.register('unload', 'unload_cb', function()

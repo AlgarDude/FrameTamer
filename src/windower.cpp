@@ -55,9 +55,33 @@ static int luaSetCutsceneFps(lua_State *L)
     return 0;
 }
 
+static int luaSetForegroundGameFps(lua_State *L)
+{
+    limiter::setForegroundGameFps(lua_tonumber(L, 1));
+    return 0;
+}
+
+static int luaSetForegroundCutsceneFps(lua_State *L)
+{
+    limiter::setForegroundCutsceneFps(lua_tonumber(L, 1));
+    return 0;
+}
+
+static int luaSetZoneFps(lua_State *L)
+{
+    limiter::setZoneFps(lua_tonumber(L, 1));
+    return 0;
+}
+
 static int luaSetInEvent(lua_State *L)
 {
     limiter::setInEvent(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+static int luaSetZoning(lua_State *L)
+{
+    limiter::setZoning(lua_toboolean(L, 1) != 0);
     return 0;
 }
 
@@ -84,7 +108,7 @@ extern "C" __declspec(dllexport) int luaopen__frametamer(lua_State *L)
     // Pinned: the hooks jump into this DLL, so it can never unload while the game runs.
     HMODULE self;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, (LPCWSTR)&luaopen__frametamer, &self);
-    lua_createtable(L, 0, 10);
+    lua_createtable(L, 0, 14);
     lua_pushcclosure(L, luaSetLogPath, 0);
     lua_setfield(L, -2, "setLogPath");
     lua_pushcclosure(L, luaInstall, 0);
@@ -97,8 +121,16 @@ extern "C" __declspec(dllexport) int luaopen__frametamer(lua_State *L)
     lua_setfield(L, -2, "setGameFps");
     lua_pushcclosure(L, luaSetCutsceneFps, 0);
     lua_setfield(L, -2, "setCutsceneFps");
+    lua_pushcclosure(L, luaSetForegroundGameFps, 0);
+    lua_setfield(L, -2, "setForegroundGameFps");
+    lua_pushcclosure(L, luaSetForegroundCutsceneFps, 0);
+    lua_setfield(L, -2, "setForegroundCutsceneFps");
+    lua_pushcclosure(L, luaSetZoneFps, 0);
+    lua_setfield(L, -2, "setZoneFps");
     lua_pushcclosure(L, luaSetInEvent, 0);
     lua_setfield(L, -2, "setInEvent");
+    lua_pushcclosure(L, luaSetZoning, 0);
+    lua_setfield(L, -2, "setZoning");
     lua_pushcclosure(L, luaSetDebug, 0);
     lua_setfield(L, -2, "setDebug");
     lua_pushcclosure(L, luaIsInstalled, 0);
